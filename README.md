@@ -17,6 +17,9 @@ Perpertuals are essentially just a way for a Trader to bet on the price of a cer
 
 ## How it works
 
+- Liquidity Provider Deposit an asset into the protocol, this asset acts as liquidity. `deposits(address(USDT)), amount)`
+- Trader opens a position with a collateral
+
 ## Foundry
 
 **Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
