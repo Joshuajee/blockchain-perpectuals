@@ -5,10 +5,11 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./TokenizedVault.sol";
 import "forge-std/console.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./interface/IPriceOracle.sol";
 
-contract JeeTrades {
+contract JeeTrades is Ownable {
 
     event DepositLiquidity(address indexed liquidityProvider, uint amount);
     event DepositCollateral(address indexed liquidityProvider, uint amount);
@@ -68,9 +69,11 @@ contract JeeTrades {
     uint public tradingLiquidity = 0;
 
     address public priceOracle;
+    address public acceptedToken;
 
-    constructor(address _priceOracle) {
+    constructor(address _priceOracle, address _acceptedToken) Ownable(msg.sender) {
         priceOracle = _priceOracle;
+        acceptedToken = _acceptedToken;
     }
 
     function deposit(address asset, uint256 amount) external {
@@ -86,6 +89,7 @@ contract JeeTrades {
 
     function withdraw(address asset, uint256 amount) external {
         address liquidityProvider = msg.sender;
+        console.log("%d", totalLPValue(asset));
         vaults[asset].withdraw(amount, liquidityProvider, liquidityProvider); 
         deposits[asset] -= amount;
         myDeposits[liquidityProvider][asset] -= amount;
@@ -93,13 +97,9 @@ contract JeeTrades {
     }
 
     function openPosition(address _collateral, address _asset, uint _collateralDeposit, uint _size, bool _isLong) external {
-
         uint amount = IPriceOracle(priceOracle).calculatePrice(_asset, _collateral, _size);
-
         IERC20(_collateral).safeTransferFrom(msg.sender, address(this), _collateralDeposit);
-
         if (!isBelowLeverage(_collateralDeposit, _size)) revert("Deposit is below leverage");
-
         positions[++positionId] = PositionStruct({
             trader: msg.sender,
             collateral: _collateral,
@@ -110,12 +110,9 @@ contract JeeTrades {
             isLong: _isLong,
             isOpen: true
         });
-
         _updatePositions(_collateral, _size, amount, _isLong);
-
         emit PositionOpened(_collateral, _asset, msg.sender, _size, true);
     }
-
 
     function increasePositionSize(uint id,  uint inc) external {
         PositionStruct storage position = positions[id];
@@ -125,7 +122,6 @@ contract JeeTrades {
         emit PositionSizeIncrease(id, inc);
     }
 
-
     function getPrice(address _asset1, address _asset2) external view returns(uint) {
         return IPriceOracle(priceOracle).getPrice(_asset1, _asset2);
     }
@@ -134,7 +130,7 @@ contract JeeTrades {
         return (uint(MAX_LEVERAGE) * 1 ether) > ((_size * 1 ether) / _collateral);
     }
 
-    function getVault(address asset) private returns(TokenizedVault vault) {
+    function getVault(address asset) public returns(TokenizedVault vault) {
         vault = vaults[asset];
         if (address(vault) == address(0)) {
             string memory _name = "JT-"; 
@@ -144,59 +140,32 @@ contract JeeTrades {
         }
     }
 
-    function positionPnL(uint _positionId) public view returns(uint pnl, bool isProfit) {
-        PositionStruct memory position = positions[_positionId]; 
-        uint currentValue =  IPriceOracle(priceOracle).calculatePrice(position.collateral, position.asset, position.value);
-        uint borrowedAmount = position.size * BASE_PRICE ** 2; //position.size * position.value;
-        if (currentValue >= borrowedAmount) {
-            pnl = currentValue - borrowedAmount;
-            if (position.isLong) {
-                isProfit = true;
-            } else {
-                isProfit = false;
-            }
-        } else {
-            pnl = borrowedAmount - currentValue;
-            if (position.isLong) {
-                isProfit = false;
-            } else {
-                isProfit = true;
-            }
-        }
-
-        pnl /= BASE_PRICE ** 2; 
+    function getVaultAddress(address asset) public view returns(address) {
+        return address(vaults[asset]);
     }
 
-    function totalPnL(address collateral, address asset) public view returns(uint pnl, bool isProfit) {
+    function positionPnL(uint _positionId) public view returns(int pnl) {
+        PositionStruct memory position = positions[_positionId]; 
+        uint currentValue =  IPriceOracle(priceOracle).calculatePrice(position.collateral, position.asset, position.value);
+        uint borrowedAmount = position.size * BASE_PRICE ** 2;
+        if (position.isLong)
+            pnl = int(int(currentValue) - int(borrowedAmount));
+        else
+            pnl = int(int(borrowedAmount) - int(currentValue));
+    }
+
+    function totalPnL(address collateral, address asset) public view returns(int pnl) {
         uint _longInterestInTokens = longInterestInTokens[collateral];
         uint _shortInterestInTokens = shortInterestInTokens[collateral];
         uint currentValueLong = IPriceOracle(priceOracle).calculatePrice(collateral, asset, _longInterestInTokens);
         uint currentValueShort = IPriceOracle(priceOracle).calculatePrice(collateral, asset, _shortInterestInTokens);
-        
-        (uint longProfit, bool isProfitLong) = getPnL(currentValueLong, longInterest[collateral], true);
-        (uint shortProfit, bool isProfitShort) = getPnL(currentValueShort, shortInterest[collateral], false);
+        int longProfit = getPnL(currentValueLong, longInterest[collateral], true);
+        int shortProfit = getPnL(currentValueShort, shortInterest[collateral], false);
+        pnl = (longProfit + shortProfit) / int(BASE_PRICE ** 2);
+    }
 
-        if (isProfitLong && isProfitShort) {
-            pnl = longProfit + shortProfit;
-            isProfit = true;
-        // } else if (isProfitLong) {
-        //     if (longProfit > shortProfit) {
-        //         pnl = longProfit - shortProfit;
-        //         isProfit = true;
-        //     } else {
-        //         pnl = shortProfit - longProfit;
-        //         isProfit = false;
-        //     }
-        } else {
-            if (longProfit > shortProfit) {
-                pnl = longProfit - shortProfit;
-                isProfit = true;
-            } else {
-                pnl = shortProfit - longProfit;
-                isProfit = false;
-            }
-        }
-
+    function totalLPValue(address collateral) public view returns(uint) {
+        return uint(int(deposits[collateral]) - totalPnL(collateral, acceptedToken));
     }
 
     function maxUtilizationPercentage(address asset) public view returns(bool, uint, uint) {
@@ -205,29 +174,21 @@ contract JeeTrades {
         return (totalOpenInterest < maxAllowed, totalOpenInterest, maxAllowed);
     }
 
+    function maxAvailableForWithdraw(address asset) public view returns(uint) {
+        uint totalOpenInterest = shortInterest[asset] + longInterest[asset];
+        console.log("%d", totalOpenInterest);
+        return totalOpenInterest;
+    }
 
-    function getPnL(uint currentValue, uint _borrowedAmount, bool isLong) public pure returns(uint pnl, bool isProfit) {
+    function getPnL(uint currentValue, uint _borrowedAmount, bool isLong) public pure returns(int pnl) {
         uint borrowedAmount = _borrowedAmount * BASE_PRICE ** 2;
-        if (currentValue >= borrowedAmount) {
-            pnl = currentValue - borrowedAmount;
-            if (isLong) {
-                isProfit = true;
-            } else {
-                isProfit = false;
-            }
-        } else {
-            pnl = borrowedAmount - currentValue;
-            if (isLong) {
-                isProfit = false;
-            } else {
-                isProfit = true;
-            }
-        }
-        pnl /= BASE_PRICE ** 2; 
+        if (isLong)
+            pnl = int(int(currentValue) - int(borrowedAmount));
+        else
+            pnl = int(int(borrowedAmount) - int(currentValue));
     }
 
     function _updatePositions(address asset, uint _size, uint _amount, bool _isLong) internal {
-
         if (_isLong) {
             longInterest[asset] += _size;
             longInterestInTokens[asset] += _amount;
@@ -235,13 +196,9 @@ contract JeeTrades {
             shortInterest[asset] += _size;
             shortInterestInTokens[asset] += _amount;
         }
-        
         (bool canOpen, ,) = maxUtilizationPercentage(asset);
-
-        if (!canOpen) revert ("Make not open this position now");
-
+        if (!canOpen) revert ("Not enough liquidity to open this position");
     }
-
 
 }
 

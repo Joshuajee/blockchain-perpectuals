@@ -17,13 +17,17 @@ contract JeeTradesTest is Test {
     address public user1 = vm.addr(1);
     address public user2 = vm.addr(2);
 
+
+    uint amount = 10000000 ether;
+    uint collateral = 10000 ether;
+
     function setUp() public {
         priceOracle = new PriceOracle();
-        jeeTrades = new JeeTrades(address(priceOracle));
         vm.prank(user1);
         USDT = new TestUSDC();
         vm.prank(user1);
         BTC = new TestUSDC();
+        jeeTrades = new JeeTrades(address(priceOracle), address(BTC));
     }
 
 
@@ -42,13 +46,11 @@ contract JeeTradesTest is Test {
 
     function testFuzz_Deposit(uint amount) public {
 
+        depositAssets(amount);
+
         vm.prank(user1);
 
         USDT.approve(address(jeeTrades), amount);
-
-        vm.prank(user1);
-
-        jeeTrades.deposit(address(USDT), amount); 
 
         TokenizedVault vault = jeeTrades.vaults(address(USDT));
 
@@ -83,9 +85,6 @@ contract JeeTradesTest is Test {
 
 
     function testFuzz_OpenPosition(uint _size, bool _type) public {
-
-        uint amount = 10000000 ether;
-        uint collateral = 10000 ether;
 
         vm.assume(_size > collateral * 10 && _size < collateral * 20);
 
@@ -166,44 +165,107 @@ contract JeeTradesTest is Test {
     }
 
 
-    function testFuzz_Pnl_long(uint _size) public {
+    function testFuzz_Pnl_of_position(uint _size, bool _isLong, bool _inc) public {
         
-        testFuzz_OpenPosition(_size, true);
+        testFuzz_OpenPosition(_size, _isLong);
 
-        (uint initialPnL, ) = jeeTrades.positionPnL(1);
+        int initialPnL = jeeTrades.positionPnL(1);
 
         assertEq(initialPnL, 0);
 
-        priceOracle.setPrice(address(USDT), 100000);
+        if (_inc) {
+            priceOracle.setPrice(address(USDT), 100000);
+        } else {
+            priceOracle.setPrice(address(USDT), 1000);
+        }
 
-        (uint currentPnL, bool isProfit) = jeeTrades.positionPnL(1);
-        
-        assert(isProfit);
-        
-        assertEq(currentPnL, _size);
+        int currentPnL = jeeTrades.positionPnL(1);
 
+        if (_inc) {
+            if (_isLong) {
+                assertGt(currentPnL, 0);
+            } else {
+                assertLt(currentPnL, 0);
+            }
+        } else {
+            if (!_isLong) {
+                assertGt(currentPnL, 0);
+            } else {
+                assertLt(currentPnL, 0);
+            }
+        }
+        
     }
 
-    function testFuzz_Pnl_total(uint _size) public {
+    function testFuzz_Pnl_total(uint _size, bool _isLong, bool _inc) public {
         
-        testFuzz_OpenPosition(_size, true);
+        testFuzz_OpenPosition(_size, _isLong);
+
 
         address collateral = address(USDT);
 
         address asset = address(BTC);
 
-        (uint initialPnL, ) = jeeTrades.totalPnL(collateral, asset);
+        int initialPnL = jeeTrades.totalPnL(collateral, asset);
+
+        console.log("%i", jeeTrades.totalLPValue(collateral));
 
         assertEq(initialPnL, 0);
 
-        priceOracle.setPrice(address(USDT), 100000);
+        if (_inc) {
+            priceOracle.setPrice(address(USDT), 100000);
+        } else {
+            priceOracle.setPrice(address(USDT), 1000);
+        }
 
-        (uint currentPnL, bool isProfit) = jeeTrades.totalPnL(collateral, asset);
-        
-        assert(isProfit);
-        
-        assertEq(currentPnL, _size);
+        int currentPnL = jeeTrades.totalPnL(collateral, asset);
 
+        if (_inc) {
+            if (_isLong) {
+                assertGt(currentPnL, 0);
+            } else {
+                assertLt(currentPnL, 0);
+            }
+        } else {
+            if (!_isLong) {
+                assertGt(currentPnL, 0);
+            } else {
+                assertLt(currentPnL, 0);
+            }
+        }
+
+    }
+
+
+    function testFuzz_WithdrawWhenPositionIsOpened(uint _size, bool _isLong) public {
+        
+        testFuzz_OpenPosition(_size, _isLong);
+
+        vm.prank(user1);
+
+        vm.expectRevert("Cannot Remove Liquidity Reserved For Positions");
+
+        jeeTrades.withdraw(address(USDT), amount); 
+
+        // try a smaller amount
+
+
+       uint maxWidthdraw =  jeeTrades.getVault(address(USDT)).maxWithdraw(user1);
+
+
+        jeeTrades.withdraw(address(USDT), maxWidthdraw); 
+
+        
+    }
+
+
+
+    function testFuzz_positionCannotExceedMax(uint _size, bool _isLong, bool _inc) public {
+        
+        testFuzz_OpenPosition(_size, _isLong);
+
+
+  
     }
 
 }
